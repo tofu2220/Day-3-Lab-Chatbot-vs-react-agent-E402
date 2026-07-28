@@ -132,12 +132,49 @@ class OpenRouterProvider(BaseLLMProvider):
 
 
 class MockProvider(BaseLLMProvider):
-    """Offline Mock Provider (Cho bài test không cần kết nối API)"""
+    """Offline deterministic provider for a runnable housing-agent demo.
+
+    It emits the same ReAct JSON contract as a real provider, allowing the
+    application to exercise its parser, tool registry, and guardrails without
+    an API key.
+    """
     def generate(self, prompt: str, system_prompt: str = "") -> str:
         text = prompt.lower()
-        if "thời tiết" in text and "hà nội" in text:
-            return "Thought: Cần tra cứu thời tiết Hà Nội.\nAction: get_weather['Hà Nội']"
-        return "🤖 [Mock Provider]: Phản hồi giả lập offline cho bài test."
+        if "câu hỏi người dùng:" not in text:
+            return "🤖 [Mock Provider]: Phản hồi giả lập offline cho bài test."
+
+        user_query = text.split("câu hỏi người dùng:", 1)[1].split("trace hiện có:", 1)[0]
+        if "chưa có observation" not in text:
+            observation = prompt.rsplit("Observation:", 1)[-1].strip()
+            return f"Thought: Đã nhận được kết quả từ công cụ.\nFinal Answer: {observation}"
+
+        if any(phrase in user_query for phrase in ("bỏ qua", "không cần gọi công cụ", "khong_ton_tai")):
+            return (
+                "Thought: Yêu cầu không đáp ứng điều kiện an toàn hoặc thiếu dữ liệu xác minh.\n"
+                "Final Answer: Tôi không thể xác nhận hay tạo lịch khi chưa xác minh căn, lịch trống và xác nhận rõ ràng của bạn."
+            )
+        if "ch001" in user_query or "ch002" in user_query or "pt003" in user_query or "pt004" in user_query:
+            property_id = next(code.upper() for code in ("ch001", "ch002", "pt003", "pt004") if code in user_query)
+            return (
+                "Thought: Cần tra cứu dữ liệu căn trước khi trả lời.\n"
+                f'Action: {{"tool": "get_property_details", "args": {{"property_id": "{property_id}"}}}}'
+            )
+        if "quận 7" in user_query:
+            return (
+                "Thought: Cần tìm theo khu vực và ngân sách.\n"
+                'Action: {"tool": "search_properties", "args": {"location": "Quận 7", "max_price": 8000000}}'
+            )
+        if "thủ đức" in user_query:
+            return (
+                "Thought: Cần tìm căn ở Thủ Đức có máy lạnh trong ngân sách.\n"
+                'Action: {"tool": "search_properties", "args": {"location": "Thủ Đức", "max_price": 7000000, "amenity": "máy lạnh"}}'
+            )
+        if "bách khoa" in user_query:
+            return (
+                "Thought: Cần tìm phòng gần Đại học Bách Khoa.\n"
+                'Action: {"tool": "search_properties", "args": {"location": "Bách Khoa", "property_type": "phòng trọ"}}'
+            )
+        return "Thought: Cần thêm tiêu chí để tra cứu.\nFinal Answer: Bạn cho tôi biết khu vực, ngân sách hoặc mã căn cần xem nhé."
 
 
 def get_llm_provider(provider_name: str = None) -> BaseLLMProvider:
