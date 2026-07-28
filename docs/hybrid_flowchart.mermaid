@@ -1,0 +1,20 @@
+flowchart TD
+    A[Người dùng gửi yêu cầu] --> B{Có cần dữ liệu căn nhà, lịch hoặc booking?}
+    B -- Không --> C[Chatbot Baseline\nTrả lời kiến thức/giải thích]
+    B -- Có --> D[ReAct Agent]
+    D --> E[Thought: chọn bước tiếp theo]
+    E --> F{Action JSON hợp lệ\nvà tool trong allow-list?}
+    F -- Không --> G[Observation: lỗi định dạng/không được phép]
+    G --> H{Còn dưới MAX_ITERATIONS?}
+    H -- Có --> E
+    H -- Không --> I[Guardrail: dừng an toàn]
+    F -- Có --> J{Tool tạo hoặc hủy booking?}
+    J -- Có --> K{Đã có xác nhận rõ ràng?}
+    K -- Không --> L[Chặn thao tác thay đổi trạng thái]
+    K -- Có --> M[Thực thi tool registry]
+    J -- Không --> M
+    M --> N[Observation: dữ liệu hoặc lỗi từ tool]
+    L --> N
+    N --> O{Đủ thông tin?}
+    O -- Chưa --> H
+    O -- Đủ --> P[Final Answer có căn cứ]

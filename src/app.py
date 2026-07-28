@@ -7,10 +7,9 @@ a particular LLM vendor; :mod:`providers` supplies the selected provider.
 
 from __future__ import annotations
 
-import ast
+import argparse
 import inspect
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass
@@ -154,6 +153,16 @@ def _history_for_prompt(trace: list[TraceStep]) -> str:
     )
 
 
+def _conversation_for_prompt(conversation_history: list[tuple[str, str]] | None) -> str:
+    """Format recent chat turns so a follow-up can refer to a previous result."""
+    if not conversation_history:
+        return "Chưa có lượt hội thoại trước đó."
+    recent_turns = conversation_history[-6:]
+    return "\n\n".join(
+        f"Người dùng: {user}\nTrợ lý: {assistant}" for user, assistant in recent_turns
+    )
+
+
 def run_baseline_chatbot(user_query: str, provider: Any, *, verbose: bool = True) -> str:
     """Run the tool-free chatbot baseline and return its answer."""
     answer = provider.generate(user_query, system_prompt=CHATBOT_BASELINE_PROMPT)
@@ -162,7 +171,13 @@ def run_baseline_chatbot(user_query: str, provider: Any, *, verbose: bool = True
     return answer
 
 
-def run_react_agent(user_query: str, provider: Any, *, verbose: bool = True) -> tuple[str, list[TraceStep]]:
+def run_react_agent(
+    user_query: str,
+    provider: Any,
+    *,
+    verbose: bool = True,
+    conversation_history: list[tuple[str, str]] | None = None,
+) -> tuple[str, list[TraceStep]]:
     """Run a bounded ReAct loop and return the final answer plus an audit trace."""
     trace: list[TraceStep] = []
     prompt = _react_prompt()
@@ -170,6 +185,7 @@ def run_react_agent(user_query: str, provider: Any, *, verbose: bool = True) -> 
     for step in range(1, MAX_ITERATIONS + 1):
         turn_prompt = (
             f"Câu hỏi người dùng: {user_query}\n\n"
+            f"Lịch sử hội thoại:\n{_conversation_for_prompt(conversation_history)}\n\n"
             f"Trace hiện có:\n{_history_for_prompt(trace)}\n\n"
             "Hãy trả lời bước tiếp theo theo đúng định dạng Thought/Action hoặc Thought/Final Answer."
         )
@@ -205,8 +221,51 @@ def run_react_agent(user_query: str, provider: Any, *, verbose: bool = True) -> 
     return answer, trace
 
 
-def main() -> None:
+def run_chat(provider: Any, *, use_baseline: bool = False, show_trace: bool = False) -> None:
+    """Start a terminal chat session; stateful tools stay alive for this session."""
+    mode = "Chatbot Baseline" if use_baseline else "ReAct Agent"
+    history: list[tuple[str, str]] = []
+    print(f"\n{mode} đã sẵn sàng. Gõ 'exit', 'quit' hoặc 'thoát' để kết thúc.")
+    print("Ví dụ: Tìm căn hộ ở Quận 7 dưới 8 triệu.")
+
+    while True:
+        try:
+            user_query = input("\nBạn: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nĐã kết thúc phiên chat.")
+            return
+
+        if not user_query:
+            continue
+        if user_query.casefold() in {"exit", "quit", "thoát"}:
+            print("Tạm biệt!")
+            return
+
+        if use_baseline:
+            answer = run_baseline_chatbot(user_query, provider, verbose=False)
+        else:
+            answer, _ = run_react_agent(
+                user_query,
+                provider,
+                verbose=show_trace,
+                conversation_history=history,
+            )
+        print(f"Agent: {answer}")
+        history.append((user_query, answer))
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Lab 3: chatbot baseline và ReAct agent")
+    parser.add_argument("--chat", action="store_true", help="mở chế độ trò chuyện tương tác")
+    parser.add_argument("--baseline", action="store_true", help="dùng chatbot baseline trong chế độ --chat")
+    parser.add_argument("--trace", action="store_true", help="in Thought/Action/Observation khi chat ReAct")
+    args = parser.parse_args(argv)
+
     provider = get_llm_provider()
+    if args.chat:
+        run_chat(provider, use_baseline=args.baseline, show_trace=args.trace)
+        return
+
     tests = load_test_cases()
     print("=" * 60)
     print("LAB 3 — Chatbot Baseline vs ReAct Agent (Tìm nhà & đặt lịch xem)")

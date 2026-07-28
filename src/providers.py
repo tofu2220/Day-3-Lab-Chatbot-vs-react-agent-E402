@@ -6,6 +6,8 @@ Hỗ trợ chuyển đổi linh hoạt giữa các nhà cung cấp AI chỉ bằ
 import os
 import sys
 import json
+import re
+import unicodedata
 import requests
 from dotenv import load_dotenv
 
@@ -138,41 +140,95 @@ class MockProvider(BaseLLMProvider):
     application to exercise its parser, tool registry, and guardrails without
     an API key.
     """
-    def generate(self, prompt: str, system_prompt: str = "") -> str:
-        text = prompt.lower()
-        if "câu hỏi người dùng:" not in text:
-            return "🤖 [Mock Provider]: Phản hồi giả lập offline cho bài test."
+    @staticmethod
+    def _fold(text: str) -> str:
+        """Compare Vietnamese text without being sensitive to accents or case."""
+        normalized = unicodedata.normalize("NFD", text.casefold())
+        return "".join(char for char in normalized if unicodedata.category(char) != "Mn").replace("đ", "d")
 
-        user_query = text.split("câu hỏi người dùng:", 1)[1].split("trace hiện có:", 1)[0]
-        if "chưa có observation" not in text:
-            observation = prompt.rsplit("Observation:", 1)[-1].strip()
+    def _baseline_response(self, user_query: str) -> str:
+        text = self._fold(user_query)
+        if any(greeting in text for greeting in ("xin chao", "hello", "hi", "chao ban")):
+            return "Chào bạn! Tôi là chatbot tư vấn nhà thuê. Bạn đang quan tâm khu vực hoặc ngân sách nào?"
+        if any(word in text for word in ("can ho", "phong tro", "tim nha", "dat lich", "thue")):
+            return (
+                "Tôi có thể tư vấn chung, nhưng Chatbot Baseline không được phép tra cứu dữ liệu căn và lịch trống. "
+                "Hãy dùng chế độ ReAct (`python src/app.py --chat`) để tìm hoặc đặt lịch có xác minh."
+            )
+        return "Tôi sẵn sàng hỗ trợ. Bạn có thể cho biết khu vực, ngân sách hoặc loại nhà bạn cần không?"
+
+    def _extract_location(self, user_query: str) -> str:
+        """Map common location spellings (including 'quân') to data locations."""
+        folded_query = self._fold(user_query)
+        locations = {
+            "quan 7": "Quận 7",
+            "thu duc": "Thủ Đức",
+            "quan 10": "Quận 10",
+            "tan phu": "Tân Phú",
+            "bach khoa": "Bách Khoa",
+            # Included so the tool can truthfully respond that no data exists there.
+            "my dinh": "Mỹ Đình",
+        }
+        for pattern, location in locations.items():
+            if pattern in folded_query:
+                return location
+        return ""
+
+    @staticmethod
+    def _extract_budget(user_query: str) -> int | None:
+        """Extract phrases such as 'dưới 5 triệu' or 'tối đa 4.5tr'."""
+        match = re.search(
+            r"(?:dưới|tối đa|không quá|≤)\s*(\d+(?:[.,]\d+)?)\s*(?:triệu|tr|m)\b",
+            user_query.casefold(),
+        )
+        if not match:
+            return None
+        return int(float(match.group(1).replace(",", ".")) * 1_000_000)
+
+    def generate(self, prompt: str, system_prompt: str = "") -> str:
+        if "Câu hỏi người dùng:" not in prompt:
+            return self._baseline_response(prompt)
+
+        query_match = re.search(
+            r"Câu hỏi người dùng:\s*(.*?)\s*\n\nLịch sử hội thoại:", prompt, flags=re.DOTALL
+        )
+        user_query = query_match.group(1).strip() if query_match else prompt
+        folded_query = self._fold(user_query)
+        if "chua co observation" not in self._fold(prompt):
+            observation_match = re.search(
+                r"Observation:\s*(.*?)\s*\n\nHãy trả lời bước tiếp theo", prompt, flags=re.DOTALL
+            )
+            observation = observation_match.group(1).strip() if observation_match else "Không nhận được kết quả tool."
             return f"Thought: Đã nhận được kết quả từ công cụ.\nFinal Answer: {observation}"
 
-        if any(phrase in user_query for phrase in ("bỏ qua", "không cần gọi công cụ", "khong_ton_tai")):
+        if any(phrase in folded_query for phrase in ("bo qua", "khong can goi cong cu", "khong_ton_tai")):
             return (
                 "Thought: Yêu cầu không đáp ứng điều kiện an toàn hoặc thiếu dữ liệu xác minh.\n"
                 "Final Answer: Tôi không thể xác nhận hay tạo lịch khi chưa xác minh căn, lịch trống và xác nhận rõ ràng của bạn."
             )
-        if "ch001" in user_query or "ch002" in user_query or "pt003" in user_query or "pt004" in user_query:
-            property_id = next(code.upper() for code in ("ch001", "ch002", "pt003", "pt004") if code in user_query)
+        if any(code in folded_query for code in ("ch001", "ch002", "pt003", "pt004")):
+            property_id = next(code.upper() for code in ("ch001", "ch002", "pt003", "pt004") if code in folded_query)
             return (
                 "Thought: Cần tra cứu dữ liệu căn trước khi trả lời.\n"
                 f'Action: {{"tool": "get_property_details", "args": {{"property_id": "{property_id}"}}}}'
             )
-        if "quận 7" in user_query:
+
+        location = self._extract_location(user_query)
+        budget = self._extract_budget(user_query)
+        is_property_search = any(
+            word in folded_query for word in ("tim", "can ho", "phong tro", "nha", "thue")
+        )
+        if location or budget is not None or is_property_search:
+            arguments = {key: value for key, value in (("location", location), ("max_price", budget)) if value not in ("", None)}
+            if "phong tro" in folded_query:
+                arguments["property_type"] = "phòng trọ"
+            elif "can ho" in folded_query:
+                arguments["property_type"] = "căn hộ"
+            if "may lanh" in folded_query:
+                arguments["amenity"] = "máy lạnh"
             return (
-                "Thought: Cần tìm theo khu vực và ngân sách.\n"
-                'Action: {"tool": "search_properties", "args": {"location": "Quận 7", "max_price": 8000000}}'
-            )
-        if "thủ đức" in user_query:
-            return (
-                "Thought: Cần tìm căn ở Thủ Đức có máy lạnh trong ngân sách.\n"
-                'Action: {"tool": "search_properties", "args": {"location": "Thủ Đức", "max_price": 7000000, "amenity": "máy lạnh"}}'
-            )
-        if "bách khoa" in user_query:
-            return (
-                "Thought: Cần tìm phòng gần Đại học Bách Khoa.\n"
-                'Action: {"tool": "search_properties", "args": {"location": "Bách Khoa", "property_type": "phòng trọ"}}'
+                "Thought: Cần tra cứu dữ liệu căn theo các tiêu chí người dùng cung cấp.\n"
+                f"Action: {{\"tool\": \"search_properties\", \"args\": {json.dumps(arguments, ensure_ascii=False)}}}"
             )
         return "Thought: Cần thêm tiêu chí để tra cứu.\nFinal Answer: Bạn cho tôi biết khu vực, ngân sách hoặc mã căn cần xem nhé."
 

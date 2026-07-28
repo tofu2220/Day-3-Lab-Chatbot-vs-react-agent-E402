@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import app
+from providers import MockProvider
 
 
 class ScriptedProvider:
@@ -54,6 +55,14 @@ class AppIntegrationTests(unittest.TestCase):
 
     def test_unknown_tool_is_blocked(self):
         self.assertIn("không được phép", app._execute_action("delete_everything", {}, "test"))
+
+    def test_mock_baseline_can_hold_a_basic_conversation(self):
+        answer = app.run_baseline_chatbot("xin chào", MockProvider(), verbose=False)
+        self.assertIn("Chào bạn", answer)
+
+    def test_mock_react_reads_budget_and_location(self):
+        answer, _ = app.run_react_agent("Tìm nhà ở Quận 10 dưới 5 triệu", MockProvider(), verbose=False)
+        self.assertIn("PT003", answer)
 
 
 if __name__ == "__main__":
